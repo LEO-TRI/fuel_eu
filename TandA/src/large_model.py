@@ -46,12 +46,14 @@ class Electricity(PowerSource):
 class PowerGenerator(ABC):
     
     name : str
+    fuels_used: list[Fuel] | Electricity
 
 @dataclass
 class Engine(PowerGenerator):
 
+    kind: str = "engine"
+
     #TtW
-    fuels_used: list[Fuel]
     slip_rate: float
 
     fuel_engine_table: pd.DataFrame
@@ -65,7 +67,11 @@ class Engine(PowerGenerator):
 @dataclass
 class ElectricPort(PowerGenerator):
     
-    fuels_used: Electricity
+    kind: str = "electricity"    
+    
+    def __post_init__(self):
+
+        self.fuels_used = [self.fuels_used] if (not isinstance(self.fuels_used, list)) else self.fuels_used
 
 
 @dataclass
