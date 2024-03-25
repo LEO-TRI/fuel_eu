@@ -34,15 +34,9 @@ class CSVDataSaver(DataSaver):
 
 class FuelCalculator(ABC):
     
-    fuel_reference_table = fuel_reference_table
-
-    def __init__(self, fuel_reference_table) -> None:
-
-        self.fuel_reference_table = fuel_reference_table
-
     @abstractmethod
     @staticmethod
-    def compute_fuel_emission(fuel: str):
+    def compute_fuel_emission(fuel_mass: float):
         pass
 
 class WtTFuelCalculator(FuelCalculator):
@@ -60,8 +54,39 @@ class TtWFuelCalculator(FuelCalculator):
                 )
 
 class ShipEmissionCalculator(ABC):
-    pass
+    
+    fuel_reference_table = pd.DataFrame
 
+    def __init__(self, fuel_reference_table: pd.DataFrame) -> None:
+
+        self.fuel_reference_table = fuel_reference_table
+
+    @abstractmethod
+    def calculate_ship_emission():
+        pass    
+
+class WtTShipEmissionCalculator(ShipEmissionCalculator):
+
+    def __init__(self, fuel_reference_table: pd.DataFrame, reward_factor: float = 1) -> None:
+
+        self.fuel_reference_table = super().__init__(fuel_reference_table)
+        self.reward_factor = reward_factor
+
+    def calculate_ship_emission(self, fuels_mass: list[float], fuels: list[str]):
+
+        numerator = 0
+        denominator = 0
+
+        for (mass, fuel) in zip(fuels_mass, fuels):
+
+            numerator += WtTFuelCalculator.compute_fuel_emission(mass, 
+                                                                *self.fuel_reference_table.loc[fuel, ["fuelEmissionFactor", "fuelCalorificValue"]].values
+                                                                )
+            
+            denominator += (mass * self.fuel_reference_table.loc[fuel, "fuelCalorificValue"] * self.reward_factor)
+
+        return numerator / denominator
+            
 
 class GHGFuelSimulator:
 
