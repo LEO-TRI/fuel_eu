@@ -2,49 +2,101 @@ import numpy as np
 import pandas as pd
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
+import functools as ft
 
 fuel_reference_df = pd.DataFrame
+slip_fuels: set = set(("ch4",)) #TODO: What to do with this?
 
 @dataclass
-class Fuel:
+class PowerSource:
+    
+    name: str
+    emission_factor: float
+
+@dataclass
+class Fuel(PowerSource):
 
     name: str #For the time being, could be methane (ch4), carbon (co2), nitrous oxide (n2o)
-    
+    lower_calorific_value: float
+    is_non_biological: bool=True
+
     #WtT
-    WtT_emission_factor: float
+    #emission_factor: float
 
     #TtW
-    emission_factor: float
     global_warming_potential: float
-    is_slip: int=0 #Used as a truthy flag and a factor for a product
+    slip_factor: int=0 #Used as a truthy flag and a factor for a product -> For now, only methane can slip with factor 1
+
+    combusted_ef: float=None #Not defined bc requires an engine type as well
 
     def __post_init__(self):
-        self.combusted_ef = self.emission_factor * self.global_warming_potential
-        self.slipped_ef = (self.global_warming_potential * self.is_slip) if self.is_slip else 0
+        self.slipped_ef: float=self.global_warming_potential * self.slip_factor
+        self.reward_factor: int=(self.is_non_biological + 1) if self.is_non_biological else int(self.is_non_biological)
 
 @dataclass
-class Engine:
+class Electricity(PowerSource):
+    
+    is_green_electricity: bool=True
 
-    name: str
-    fuels_used: list[str]
+    def __post_init__(self):
+        self.emission_factor = 0 if self.is_green_electricity else self.emission_factor #Introduced since elec ef is assumed to be always 0 for FuelEU
+
+
+@dataclass
+class PowerGenerator(ABC):
+    
+    name : str
+
+@dataclass
+class Engine(PowerGenerator):
+
+    #TtW
+    fuels_used: list[Fuel]
+    slip_rate: float
+
+    fuel_engine_table: pd.DataFrame
+
+    def __post_init__(self):
+
+        self.slip_rate = (self.slip_rate / 100) if (self.slip_factor >= 1) else self.slip_rate #Corrects potential error if slip rate is passed in %
+        self.combusted_ef_list = [(self.fuel_engine_table.at[self.name, fuel.name] * fuel.global_warming_potential) for fuel in self.fuels_used]
+        self.slipped_ef_list = [fuel.slipped_ef for fuel in self.fuels_used]
+
+@dataclass
+class ElectricPort(PowerGenerator):
+    
+    fuels_used: Electricity
+
 
 @dataclass
 class Ship:
 
     name: str
-    fuels: list[Fuel] #TODO Add a Fuel Object | Engine Object? 
-    engines : list[Engine]
+    engines: list[Engine | ElectricPort]
+    ship_ef: float = 1
 
+    def __post_init__(self):
+        self.fuels_used = list(set().union(*[engine.fuels_used for engine in self.engines])) #Indicative, fuels are allocated via the Engine class
+
+#TODO: Add subclasses of ships?
+        
 
 class ShipEmissionCalculator(ABC):
     def __init__(self, 
-                 fuel_mass: np.ndarray,
-                 fuel_is_column: bool=False,
-                 reward_factor: np.ndarray=1) -> None:
+                 ship: Ship,
+                 fuel_mass_per_engine: list[pd.Series],
+                 ) -> None:
+
+        self.ship = ship
         
-        self.fuel_mass = fuel_mass
-        self.reward_factor = reward_factor
-        self.fuel_is_column = fuel_is_column
+        self.fuel_engine_table = pd.DataFrame(index=[fuel.name for fuel in self.ship.fuels_used])
+        #Recursive left joins to create a comprehensive table of fuels vs engines consumption
+        self.fuel_engine_table = (ft.reduce(lambda x,y: x.join(y.to_frame(name=y.name), how="left"), 
+                                            (self.fuel_engine_table, *fuel_mass_per_engine)
+                                            )
+                                    .replace(np.nan, 0)
+                                    )
+        #self.fuel_mass_per_engine = fuel_mass_per_engine
 
     @abstractmethod
     def compute(self) -> pd.DataFrame:
@@ -52,24 +104,31 @@ class ShipEmissionCalculator(ABC):
 
 class WtTCalculator(ShipEmissionCalculator):
 
-    def __init__(self, fuel_mass: np.ndarray, fuel_is_column: bool=False, reward_factor: np.ndarray=1) -> None:
-        super().__init__(fuel_mass, fuel_is_column, reward_factor)
+    def __init__(self, ship: Ship, fuel_mass_per_engine: list[pd.Series]) -> None:
+        
+        super().__init__(ship, fuel_mass_per_engine)
 
-        if self.fuel_mass.ndim > 1: #If fuel mass is by engine by fuel, reduces to only fuel dimension
-            
-            axis = 1
-            if self.fuel_is_column:
-                axis = 0
-            self.fuel_mass = np.sum(self.fuel_mass, axis=axis)
+        self.fuel_engine_table = (self.fuel_engine_table.sum(axis=1) #Erasing the engine dimension for WtT.
+                                                        .to_frame(name="fuelsUsed")
+                                                        )
+        self.fuel_factors = (pd.DataFrame(data=[(fuel.name, fuel.lower_calorific_value, fuel.WtT_emission_factor, fuel.reward_factor) for fuel in self.ship.fuels_used], 
+                                          columns=["fuels", "lowerCalorificValue", "emisssionFactorWtT", "rewardFactor"]
+                                          )
+                                .set_index('fuels')
+                                )
+        self.fuel_engine_table = self.fuel_engine_table.join(self.fuel_factors, how="left")
 
-    def compute(self,
-                co2_intensity: np.ndarray, #1D, per fuel i
-                energy_intensity: np.ndarray #1D, per fuel i
-                ) -> float:
+
+    def compute(self) -> float:
+
+        fuels_used = self.fuel_engine_table["fuelsUsed"].to_numpy()
+        lcv = self.fuel_engine_table["lowerCalorificValue"].to_numpy()
+        ef_WtT = self.fuel_engine_table["emisssionFactorWtT"].to_numpy()
+        reward_factor = self.fuel_engine_table["rewardFactor"].to_numpy()
         
         #For 2 1D vector, a @ b is equivalent to np.sum(a * b)
-        numerator = (self.fuel_mass * energy_intensity) @ co2_intensity #Scalar
-        denominator = (self.fuel_mass * self.reward_factor) @ energy_intensity #Scalar
+        numerator = (fuels_used * ef_WtT) @ lcv #Scalar
+        denominator = (fuels_used * reward_factor) @ lcv #Scalar
 
         return numerator / denominator
 
