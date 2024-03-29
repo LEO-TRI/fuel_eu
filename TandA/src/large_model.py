@@ -16,12 +16,12 @@ class PowerSource:
 @dataclass
 class Fuel(PowerSource):
 
-    name: str #For the time being, could be methane (ch4), carbon (co2), nitrous oxide (n2o)
+    #name: str #For the time being, could be methane (ch4), carbon (co2), nitrous oxide (n2o)
     lower_calorific_value: float
     is_non_biological: bool=True
 
     #WtT
-    #emission_factor: float
+    #emission_factor: float #Defined in PowerSource
 
     #TtW
     global_warming_potential: float
@@ -31,7 +31,7 @@ class Fuel(PowerSource):
 
     def __post_init__(self):
         self.slipped_ef: float=self.global_warming_potential * self.slip_factor
-        self.reward_factor: int=(self.is_non_biological + 1) if self.is_non_biological else int(self.is_non_biological)
+        self.reward_factor: int=int(self.is_non_biological) + 1
 
 @dataclass
 class Electricity(PowerSource):
