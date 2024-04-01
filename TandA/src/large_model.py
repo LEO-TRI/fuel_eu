@@ -1,14 +1,14 @@
 import numpy as np
 import pandas as pd
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, InitVar
 import functools as ft
 
 fuel_reference_df = pd.DataFrame
 slip_fuels: set = set(("ch4",)) #TODO: What to do with this?
 
 @dataclass
-class PowerSource:
+class PowerSource(ABC):
     
     name: str
     emission_factor: float
@@ -18,7 +18,6 @@ class Fuel(PowerSource):
 
     #name: str #For the time being, could be methane (ch4), carbon (co2), nitrous oxide (n2o)
     lower_calorific_value: float
-    is_non_biological: bool=True
 
     #WtT
     #emission_factor: float #Defined in PowerSource
@@ -29,8 +28,10 @@ class Fuel(PowerSource):
 
     combusted_ef: float=None #Not defined bc requires an engine type as well
 
+    is_non_biological: bool=True
+
     def __post_init__(self):
-        self.slipped_ef: float=self.global_warming_potential * self.slip_factor
+        self.slipped_ef: float=self.global_warming_potential * self.slip_factor 
         self.reward_factor: int=int(self.is_non_biological) + 1
 
 @dataclass
@@ -46,7 +47,7 @@ class Electricity(PowerSource):
 class PowerGenerator(ABC):
     
     name : str
-    fuels_used: list[Fuel] | Electricity
+    fuels_used: list[Fuel | Electricity]
 
 @dataclass
 class Engine(PowerGenerator):
@@ -56,12 +57,14 @@ class Engine(PowerGenerator):
     #TtW
     slip_rate: float
 
-    fuel_engine_table: pd.DataFrame
+    fuel_engine_table: InitVar[pd.DataFrame]
 
-    def __post_init__(self):
+    def __post_init__(self, fuel_engine_table):
 
         self.slip_rate = (self.slip_rate / 100) if (self.slip_factor >= 1) else self.slip_rate #Corrects potential error if slip rate is passed in %
-        self.combusted_ef_list = [(self.fuel_engine_table.at[self.name, fuel.name] * fuel.global_warming_potential) for fuel in self.fuels_used]
+        #Combusted emission factors will vary depending on a combination of fuel and engine types
+        self.combusted_ef_list = [(fuel_engine_table.at[self.name, fuel.name] * fuel.global_warming_potential) for fuel in self.fuels_used]
+        #Those are unique to fuels, and are 0 expect for methane
         self.slipped_ef_list = [fuel.slipped_ef for fuel in self.fuels_used]
 
 @dataclass
@@ -82,7 +85,13 @@ class Ship:
     ship_ef: float = 1
 
     def __post_init__(self):
-        self.fuels_used = list(set().union(*[engine.fuels_used for engine in self.engines])) #Indicative, fuels are allocated via the Engine class
+        self.fuels_used = set().union(*[engine.fuels_used for engine in self.engines]) #Indicative, fuels are allocated via the Engine class
+
+    def __getitem__():
+        pass
+
+    def __getattribute__(self, __name: str):
+        pass
 
 #TODO: Add subclasses of ships?
         
@@ -117,7 +126,9 @@ class WtTCalculator(ShipEmissionCalculator):
         self.fuel_engine_table = (self.fuel_engine_table.sum(axis=1) #Erasing the engine dimension for WtT.
                                                         .to_frame(name="fuelsUsed")
                                                         )
-        self.fuel_factors = (pd.DataFrame(data=[(fuel.name, fuel.lower_calorific_value, fuel.WtT_emission_factor, fuel.reward_factor) for fuel in self.ship.fuels_used], 
+        self.fuel_factors = (pd.DataFrame(data=[(fuel.name, fuel.lower_calorific_value, fuel.WtT_emission_factor, fuel.reward_factor) 
+                                                for fuel in self.ship.fuels_used
+                                                ], 
                                           columns=["fuels", "lowerCalorificValue", "emisssionFactorWtT", "rewardFactor"]
                                           )
                                 .set_index('fuels')

@@ -1,94 +1,13 @@
 import numpy as np
 import pandas as pd
+import itertools as it
 from abc import ABC, abstractmethod
 from pathlib import Path
-
-class DataLoader(ABC):
-    @abstractmethod   
-    def load_data(self, path: str | Path) -> pd.DataFrame:
-        pass
-
-class ParquetDataLoader(DataLoader):
-    def load_data(self, path: str | Path) -> pd.DataFrame:
-        return pd.read_parquet(path)
-
-class CSVDataLoader(DataLoader):
-    def load_data(self, path: str | Path) -> pd.DataFrame:
-        return pd.read_csv(path)
-
-class DataSaver(ABC):
-    @abstractmethod
-    def save_data(self, df: pd.DataFrame, path: str) -> None:
-        pass
-
-class ParquetDataSaver(DataSaver):
-    def save_data(self, df: pd.DataFrame, path: str) -> None:
-        df.to_parquet(path)
-
-class CSVDataSaver(DataSaver):
-    def save_data(self, df: pd.DataFrame, path: str) -> None:
-        df.to_csv(path)
+from large_model import Ship
 
 #####################################################################
-        
 
-class FuelCalculator(ABC):
-    
-    @abstractmethod
-    @staticmethod
-    def compute_fuel_emission(fuel_mass: float):
-        pass
-
-class WtTFuelCalculator(FuelCalculator):
-
-    def compute_fuel_emission(fuel_mass: float, fuel_ef: float, fuel_calorific_value: float) -> float:
-
-        return fuel_ef * fuel_mass * fuel_calorific_value
-
-class TtWFuelCalculator(FuelCalculator):
-
-    def compute_fuel_emission(fuel_mass: float, fuel_ef_combusted: float, fuel_ef_slippped: float, slip_rate: float) -> float:
-
-        return (
-            (fuel_ef_combusted * (1 - slip_rate) + slip_rate * fuel_ef_slippped) * fuel_mass
-                )
-
-class ShipEmissionCalculator(ABC):
-    
-    fuel_reference_table = pd.DataFrame
-
-    def __init__(self, fuel_reference_table: pd.DataFrame) -> None:
-
-        self.fuel_reference_table = fuel_reference_table
-
-    @abstractmethod
-    def calculate_ship_emission():
-        pass    
-
-class WtTShipEmissionCalculator(ShipEmissionCalculator):
-
-    def __init__(self, fuel_reference_table: pd.DataFrame, reward_factor: float = 1) -> None:
-
-        self.fuel_reference_table = super().__init__(fuel_reference_table)
-        self.reward_factor = reward_factor
-
-    def calculate_ship_emission(self, fuels_mass: list[float], fuels: list[str]):
-
-        numerator = 0
-        denominator = 0
-
-        for (mass, fuel) in zip(fuels_mass, fuels):
-
-            numerator += WtTFuelCalculator.compute_fuel_emission(mass, 
-                                                                *self.fuel_reference_table.loc[fuel, ["fuelEmissionFactor", "fuelCalorificValue"]].values
-                                                                )
-            
-            denominator += (mass * self.fuel_reference_table.loc[fuel, "fuelCalorificValue"] * self.reward_factor)
-
-        return numerator / denominator
-            
-
-class GHGFuelSimulator:
+class GHGFuelSimulator(ABC):
 
     def __init__(self, prop_wind_proportion: float=0) -> None:
         
@@ -103,8 +22,76 @@ class GHGFuelSimulator:
     def calcuate_ghg_intensity(self, emissions_WtT: float, emissions_TtW: float, wind_reward_factor: float=1.):
 
         return (emissions_WtT + emissions_TtW) * wind_reward_factor
-    
+
+class ShipConverter(ABC):
+
+    def __init__(self) -> None:
+        pass
+
+    def convert(self, 
+                ships: list[Ship], 
+                ship_attributes: list[str], 
+                engines_attributes: list[str]
+                ) -> pd.DataFrame:
+        
+        #gen_a = (self.get_attribute_values(ship, ship_attributes) for ship in ships)
+        #gen_b = (self.processing_engines(ship, engines_attributes) for ship in ships)
+        #c = it.chain.from_iterable([([tuple(a+x) for x in b] for (a, b) in zip(gen_a, gen_b)])
+
+        if isinstance(ship_attributes, str):
+            ship_attributes = [ship_attributes]
+        if isinstance(engines_attributes, str):
+            engines_attributes = [engines_attributes]
+
+        if not ('name' in ship_attributes):
+            ship_attributes.append('name')
+        
+        ships_df = (pd.DataFrame((self.get_attribute_values(ship, ship_attributes) for ship in ships),
+                                 columns=ship_attributes)
+                      .set_index('name')
+                      )     
+        gen_engines = ((pd.DataFrame(data=self.processing_engines(ship, engines_attributes), #list[tuples]
+                                     columns=engines_attributes,
+                                     index=np.full(len(ship.engines), ship.name))
+                         ) 
+                         for ship in ships
+                         )
+        engines_df = pd.concat(gen_engines, axis=0)
+        merged_df = (engines_df.join(ships_df, how='left', lsuffix='_engine', rsuffix='_ship')
+                               .reset_index()
+                               .loc[:, ship_attributes + engines_attributes])
+        
+        return merged_df
+        
+    def processing_engines(self, ship: Ship, engines_attributes: list[str]) -> list[list]:
+        return [self.get_attribute_values(engine, engines_attributes) for engine in ship.engines]
+
+    @staticmethod
+    def get_attribute_values(obj, attribute_names: list[str]) -> list:
+        return list((getattr(obj, name) for name in attribute_names))
 
 
+class FleetEmissionCalculator(GHGFuelSimulator):
+
+    def __init__(self, ship_df: pd.DataFrame, 
+                 fuel_table: pd.DataFrame,
+                 merge_column: str="fuel", 
+                 prop_wind_proportion: float=0):
+
+        super.__init__(prop_wind_proportion)
+
+        self.ship_table = (ship_df.join(fuel_table, how='left')
+                                          .reset_index()
+                                          .set_index(['imo', 'engine'])
+                                          )
     
+    
+    def compute_WtT(self):
+        pass
+            
+
+
+
+
+
     
